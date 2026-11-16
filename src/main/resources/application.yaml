@@ -1,0 +1,222 @@
+server:
+  port: 8081
+  # 优雅停机：收到停机信号后先拒绝新请求、等处理中的请求跑完，再关容器。
+  # 默认是 immediate，重启时正在下单的请求会被直接 reset——对秒杀这种接口就是
+  # "用户点了没反应"，而且日志里什么都看不到。这一步也是"发布不中断"的最低成本实现。
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    # 给在途请求和 MQ 消费留的收尾时间。超过这个时间才强杀。
+    # 20 秒的依据：最长的是 MQ 消费（一次 DB 事务），压测里 P99 在毫秒级，
+    # 20 秒足够把队列里正在处理的那批消费完，又不会让发布卡太久。
+    timeout-per-shutdown-phase: 20s
+  profiles:
+    # 本机私有配置（真实密码）放 application-local.yaml，该文件在 .gitignore 里，不会进仓库。
+    # 没有这个文件也不影响启动：下面所有敏感项都有环境变量兜底。
+    # 模板见 application-local.example.yaml。
+    include: local
+  servlet:
+    multipart:
+      # 上传接口只收图片，5MB 足够。不显式配的话走 Boot 默认的 1MB，
+      # 手机直出的图经常超；但也不能放开到几十 MB——那等于给了"传大文件占满磁盘"的入口。
+      # 注意这只是兜底：真正的类型控制在 UploadController 的后缀白名单里。
+      max-file-size: 5MB
+      max-request-size: 10MB
+  # mysql配置（版本MySQL8.0.45）
+  # 仓库里不保存任何真实口令。所有敏感项都是 ${环境变量:默认值}：
+  # 本机开发把真实值写进 application-local.yaml（已被 .gitignore 忽略），
+  # 容器 / CI 直接注入同名环境变量即可，代码与配置无需改动。
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:hmdp}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
+    # 默认留空。MySQL 设了密码就必须自己提供，启动时会直接 "Access denied"，不会静默连错库
+    password: ${MYSQL_PASSWORD:}
+  # redis配置（黑马点评项目必须用，本地默认配置）
+  redis:
+    host: ${REDIS_HOST:127.0.0.1}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    database: ${REDIS_DATABASE:0}
+    # 连接池：原版没配，压测时会成为隐性瓶颈。
+    # 经验公式：连接数 ≈ QPS × 平均耗时(s)。500 QPS × 2ms ≈ 1 个连接，
+    # 但网络抖动会让单次耗时到 5~10ms，所以留 8 个余量。
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 2
+        max-wait: 1000ms
+
+  # ============================================================
+  # 改造新增：RabbitMQ（替代原版 Redis Stream）
+  # 本地启动：docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management
+  # ============================================================
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    # 发送确认：必须配 correlated 或 simple，配 none 等于没开
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    # broker 挂掉时，单次发送默认要等约 3 秒才失败。
+    # 秒杀接口每秒几百请求，几秒就能把 Tomcat 线程池占满，
+    # 所以这里压到 2 秒，并配合 app.mq 的熔断开关做快速失败
+    connection-timeout: 2000
+    listener:
+      simple:
+        acknowledge-mode: auto
+        # 并发消费者：原版是单线程 Stream 消费，吞吐上限锁死在一个线程上
+        concurrency: 4
+        max-concurrency: 16
+        prefetch: 20
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000ms
+          multiplier: 2
+          max-interval: 10000ms
+        # 重试用尽后不重回队列（否则会无限热循环），交给死信队列
+        default-requeue-rejected: false
+
+# 日志级别：这一项不是"顺手改改"，是实测出来的最大性能杀手
+# ------------------------------------------------------------
+# 同一台机器、同一份代码压 /shop-type/list（4 进程×16 并发）：
+#   com.hmdp=debug + MyBatis StdOutImpl  →  3097 QPS，P99 48.9ms
+#   com.hmdp=info  + MyBatis Slf4jImpl   → 20270 QPS，P99  7.8ms
+# 差 6.5 倍。原因是每次请求都往 stdout 打一行 SQL，控制台 I/O 是同步阻塞的。
+# 开发期想临时看 SQL，单独把 mapper 包打开即可（不要动全局 debug）：
+#   logging.level.com.hmdp.mapper: debug
+logging:
+  level:
+    com.hmdp: info
+
+# mybatis-plus配置
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.hmdp.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    # 用 Slf4j 而不是 StdOut：走日志框架才能被 logging.level 控制，
+    # 用 StdOut 等于绕过了日志级别，配上 debug 就是灾难
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+# ============================================================
+# 改造新增：以下四个是"回退开关"，出问题不用改代码，改这里重启即可
+# ============================================================
+app:
+  # 图片上传根目录。
+  # 原来写死在 SystemConstants 里，是一个课程配套的 Windows 绝对路径——
+  # 换台机器就不存在，等于把"本机目录结构"变成了启动前提。
+  # 默认落在工作目录下的 ./imgs/（已在 .gitignore 中），想让 Nginx 直接托管就指过去：
+  #   HMDP_UPLOAD_DIR=/var/www/hmdp/imgs/
+  upload:
+    dir: ${HMDP_UPLOAD_DIR:./imgs/}
+
+  # 雪花 ID 的机器标识（5 位，0~31）。
+  #   单机默认 0；多副本部署时每个副本必须给不同的值，否则同一毫秒会撞号。
+  #   由部署层注入：环境变量 WORKER_ID，或容器编排取 StatefulSet 的序号、配置中心统一下发。
+  #   启动时校验范围，越界直接启动失败——宁可起不来，也不要带着会撞的编号上线。
+  # 绝不要用随机数：32 个槽位下第 8 个实例的碰撞概率就超过一半。
+  snowflake:
+    worker-id: ${WORKER_ID:0}
+    datacenter-id: 0
+
+  # 本地售罄标识：关掉后退化为每次都问 Redis（正确性不变，只是多打 Redis）
+  soldout:
+    enabled: true
+
+  # 秒杀结果查询
+  seckill:
+    # DB 无单、Redis 无回滚标记时，最多认为"还在处理中"多久（秒）。
+    # 超过它就返回 TIMEOUT，让用户重试，而不是永远显示"处理中"。
+    # 判断依据来自订单号本身（雪花高位是时间戳），不需要额外存储。
+    # 正常链路消费者 50ms 内落库，60 秒是 1000 倍余量；只有积压超过一分钟才可能误判。
+    pending-timeout-seconds: 60
+  # 超时关单：关掉后库存会重新锁死，只在任务本身出 bug 时临时关闭
+  close-job:
+    enabled: true
+  # 对账任务：调试期太吵可以关
+  reconcile-job:
+    enabled: true
+  # 冷热分离归档（每天 03:00 把 90 天前的终态订单搬到历史表）。
+  # 关掉只影响"历史订单搬不搬"，订单查询会同时读两张表，所以关掉也不会查出错数据。
+  archive-job:
+    enabled: true
+    # 每天 3:00。想演示/验证时可以临时改密：传 --app.archive-job.cron=0/20 * * * * ? 就每 20 秒一轮
+    cron: "0 0 3 * * ?"
+  # 死信处置：进死信 = 这笔单确定没落库，自动回滚 Redis 预扣，避免库存永久丢失。
+  # 关掉后死信只堆积不处置，需要人工逐条处理
+  dlq:
+    enabled: true
+
+  # MQ 发送熔断：broker 挂掉时避免秒杀接口长时间阻塞把线程池占满
+  mq:
+    # 连续失败多少次后打开熔断
+    breaker-failures: 10
+    # 熔断持续时长，到期后自动放一个请求去探测是否恢复
+    breaker-open-ms: 3000
+  # 二级缓存的 L1：关掉后退化为只有 Redis 的单级缓存
+  cache:
+    l1-enabled: true
+
+  # 秒杀入口限流（令牌桶，按用户维度）。压测对照时用 --app.rate-limit.enabled=false 关掉
+  rate-limit:
+    enabled: true
+    # 长期速率：每用户每秒 5 次。正常人的点击间隔在几百毫秒级，5/s 足够宽；
+    # 而脚本一秒能打几千次，会被稳定压到 5/s
+    per-user-qps: 5
+    # 桶容量 = 允许的瞬时突发。设成和速率一样，等于"不允许攒额度"
+    burst: 5
+    # 本地粗筛阈值（每个实例每秒）。设成精确值的 2 倍：
+    # 本地是固定窗口，边界处最多放过 2 倍，正好用它做"粗筛"；
+    # 真正的 5/s 由 Redis 令牌桶保证。本地这一级的作用是让 99% 的垃圾流量
+    # 在零 IO 的地方就被拒掉，而不是拿 Redis 脚本去保护 Redis。
+    local-per-second: 10
+
+  # JWT 认证结果本地缓存。
+  # 关掉后退化为"每请求验签 + 查一次 Redis 黑名单"，用于压测对比，
+  # 也是黑名单机制出问题时的紧急止损开关。
+  jwt:
+    local-cache-enabled: true
+    # 存活秒数：越短越安全，越长越省 Redis。登出有广播兜底，这里只兜广播丢失的情况
+    local-cache-seconds: 30
+
+  reconcile:
+    # 对账任务间隔，默认 5 分钟
+    interval-ms: 300000
+
+# ============================================================
+# 改造新增：JWT 无状态认证（替代原版"Redis 存会话 + 拦截器续期"）
+# ============================================================
+jwt:
+  # HS256 签名密钥。长度必须 >= 32 字节，否则 Keys.hmacShaKeyFor() 直接拒绝启动
+  # （这是升级 jjwt 0.11 的收益之一：0.9.1 允许 8 位密钥"跑起来"，0.11 启动就拦）。
+  #
+  # 这里的默认值是一个**公开的、仅供本地跑通的占位串**，不是任何环境的真实密钥。
+  # 含义很明确：谁拿到这份代码，谁就能伪造 token。所以部署前必须用环境变量覆盖：
+  #   export JWT_SECRET="$(openssl rand -base64 48)"
+  # 换密钥 = 所有已签发 token 立刻失效，属于运维操作，要配合灰度。
+  secret: ${JWT_SECRET:dev-only-insecure-placeholder-override-in-production}
+  # access token 有效期（分钟）。无状态 token 无法主动作废，所以不宜设太长；1440 = 1 天
+  ttl-minutes: ${JWT_TTL_MINUTES:1440}
+
+# ============================================================
+# 改造新增：指标暴露，压测时 curl /prometheus 拿数据，别靠形容词
+# ============================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # 探针要能区分"活着但还没准备好"和"已经挂了"，否则 K8s 会在启动期就把实例拉走
+      probes:
+        enabled: true
+      show-details: always
+  metrics:
+    tags:
+      application: hm-dianping

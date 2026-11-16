@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.3.12.RELEASE</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.hmdp</groupId>
+    <artifactId>hm-dianping</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>hm-dianping</name>
+    <description>Demo project for Spring Boot</description>
+    <properties>
+        <java.version>1.8</java.version>
+    </properties>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- MySQL驱动 适配MySQL8.0.45 -->
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-boot-starter</artifactId>
+            <version>3.4.3</version>
+        </dependency>
+        <!--hutool-->
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+            <version>5.7.17</version>
+        </dependency>
+        <!-- aspectjweaver：看着"没有 @Aspect 就是没用"，实际是 Spring AOP 自动代理的运行时依赖。
+             第一次清理时我把它删了，结果 mvn test 里所有 @SpringBootTest 都报
+             NoClassDefFoundError: org/aspectj/lang/annotation/Pointcut —— 上下文都起不来。
+             原因：Spring Boot 的 AopAutoConfiguration 默认会注册 AspectJAutoProxyCreator，
+             它初始化时要加载 aspectj 的注解类；@Transactional、MyBatis-Plus 的代理都走这条路。
+             结论：这个依赖不是"业务代码用没用"，而是"框架用没用"。删依赖必须跑一遍集成测试。 -->
+        <dependency>
+            <groupId>org.aspectj</groupId>
+            <artifactId>aspectjweaver</artifactId>
+        </dependency>
+        <!--redisson：原版教程用它做分布式锁。改造后 Lua 原子脚本把"查库存+判重+扣减+占位"
+            合成一次 Redis 调用，锁要保护的东西已经不存在，所以依赖和 RedissonConfig 一起删了。
+            删完必须 mvn clean test —— target 里的旧 class 会继续被扫描，不 clean 会报
+            NoClassDefFoundError: org/redisson/api/RedissonClient，看起来像"删错了"，其实是残留。-->
+
+        <!-- ==========================================================
+             改造新增依赖（4 个）。
+             版本全部由 spring-boot-starter-parent 2.3.12 管理，不要手写 version，
+             手写反而容易和 Boot 冲突。
+             若 Maven 报 "must be defined"，说明本地解析不到父 POM 的管理列表，
+             再单独加 <version>2.8.5</version>（caffeine）。
+             ========================================================== -->
+
+        <!-- 1. Caffeine：本地一级缓存 L1（CacheClient / LocalSoldOutGuard 使用） -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
+        <!-- 2. RabbitMQ：替代原版 Redis Stream 做异步下单 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <!-- 3. Actuator + Prometheus：压测时看 QPS / RT / 缓存命中率 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- 5. Spring Security：认证框架。白名单放行 + 过滤器链接管鉴权，
+                不再依赖拦截器里手写的 if-else 判断 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- 6. jjwt 0.11.5：JWT 签发与校验。
+             从 0.9.1 升级，原因有三条（都是能直接说的）：
+               ① 0.9.1 的 API 已被废弃：signWith(SignatureAlgorithm, String) 会把
+                  String 当 Base64 解码，密钥传错也不报错，属于"静默错"；
+                  parseClaimsJws 的 parser() 在 0.11 已换成 parserBuilder()。
+               ② 0.9.1 把 jackson 和 jaxb 一起硬依赖进来，在 JDK9+ 上还要额外补
+                  javax.xml.bind，属于历史包袱；0.11 拆成 api/impl/jackson 三件套，
+                  实现类只在运行时需要，编译期拿到的是接口。
+               ③ 密钥强度由代码保证：Keys.hmacShaKeyFor() 会拒绝 <256bit 的密钥，
+                  而 0.9.1 允许你用 8 位字符串当 HS256 密钥，上线就是漏洞。
+             三个 artifact 缺一不可：只加 api 会在运行时报
+             "Unable to discover any JJWT implementation"。 -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.11.5</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.11.5</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.11.5</version>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

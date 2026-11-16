@@ -1,0 +1,31 @@
+# ============================================================
+# 本机配置模板
+#   1) 复制一份，改名成 application-local.yaml（同目录）
+#   2) 把下面的值换成你自己环境的
+#   3) application-local.yaml 已在 .gitignore 里，不会被提交
+#
+# 也可以不建这个文件，改用环境变量（优先级更高，适合容器/CI）：
+#   MYSQL_HOST / MYSQL_PORT / MYSQL_DATABASE / MYSQL_USERNAME / MYSQL_PASSWORD
+#   REDIS_HOST / REDIS_PORT / REDIS_PASSWORD / REDIS_DATABASE
+#   RABBITMQ_HOST / RABBITMQ_PORT / RABBITMQ_USERNAME / RABBITMQ_PASSWORD
+#   JWT_SECRET / JWT_TTL_MINUTES / WORKER_ID / HMDP_UPLOAD_DIR
+# ============================================================
+spring:
+  datasource:
+    # 换成本机 MySQL 的密码；没有密码就留空
+    password: your_mysql_password
+  redis:
+    # 换成本机 Redis 的密码；没设 requirepass 就留空
+    password: your_redis_password
+
+jwt:
+  # 必须 >= 32 字节。生成一个：
+  #   openssl rand -base64 48
+  secret: please-generate-your-own-secret-at-least-32-bytes
+
+app:
+  upload:
+    # 图片上传根目录。默认 ./imgs/ 也能跑，只是图片不在 Nginx 静态目录下
+    # Windows 示例：D:/nginx/html/hmdp/imgs/
+    # Linux   示例：/var/www/hmdp/imgs/
+    dir: ./imgs/
