@@ -13,6 +13,7 @@
 spring:
   datasource:
     # 换成本机 MySQL 的密码；没有密码就留空
+    # 建议给这个项目单独建一个只对 hmdp 库有权限的账号，不要用你平时那套密码
     password: your_mysql_password
   redis:
     # 换成本机 Redis 的密码；没设 requirepass 就留空

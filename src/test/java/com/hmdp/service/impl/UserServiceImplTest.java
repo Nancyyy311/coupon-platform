@@ -165,7 +165,7 @@ class UserServiceImplTest {
         when(chain.one()).thenReturn(user);
         when(jwtUtil.generate(any())).thenReturn("jwt-token");
 
-        Result result = userService.login(form("123456"), null);
+        Result result = userService.login(form("135790"), null);
 
         assertTrue(result.getSuccess());
         assertEquals("jwt-token", result.getData());
@@ -223,7 +223,7 @@ class UserServiceImplTest {
         when(userMapper.insert(any(User.class))).thenThrow(new DuplicateKeyException("uniqe_key_phone"));
         when(jwtUtil.generate(any())).thenReturn("jwt-token");
 
-        Result result = userService.login(form("123456"), null);
+        Result result = userService.login(form("135790"), null);
 
         assertTrue(result.getSuccess());
         assertEquals("jwt-token", result.getData());
@@ -237,6 +237,6 @@ class UserServiceImplTest {
         when(chain.one()).thenReturn(null);
         when(userMapper.insert(any(User.class))).thenThrow(new DuplicateKeyException("uniqe_key_phone"));
 
-        assertThrows(DuplicateKeyException.class, () -> userService.login(form("123456"), null));
+        assertThrows(DuplicateKeyException.class, () -> userService.login(form("135790"), null));
     }
 }

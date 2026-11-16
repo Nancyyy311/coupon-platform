@@ -55,7 +55,7 @@ class VoucherOrderServiceImplTest {
 
     private static final long VOUCHER_ID = 7L;
     private static final long USER_ID = 1L;
-    private static final long ORDER_ID = 1234567890123L;
+    private static final long ORDER_ID = 1734567890123L;
 
     @Mock
     private StringRedisTemplate stringRedisTemplate;
@@ -275,7 +275,7 @@ class VoucherOrderServiceImplTest {
      * 造一个"刚刚生成"的真实雪花 ID。
      *
      * 查询接口会用订单号反解生成时间来判断等了多久，所以这里不能用常量：
-     * 随便写的数字（比如 1234567890123）解出来是 2024 年初，会被判成超时。
+     * 随便写的数字（比如 1734567890123）解出来是 2024 年初，会被判成超时。
      */
     private static long freshOrderId() {
         return new SnowflakeIdWorker().nextId();
