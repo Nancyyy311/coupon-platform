@@ -91,6 +91,23 @@ mvn spring-boot:run     # 默认 8081
 mvn test                # 173 个单测，不需要任何中间件
 ```
 
+### 5. 接口验收
+
+`bench/` 下是接口层的验收脚本，合计 94 条断言，跑的是真实 HTTP 请求。它们会写库，每个脚本结束时自己删干净并核对基线。
+
+```bash
+cd bench
+export MYSQL_PASSWORD=你的密码 REDIS_PASSWORD=你的密码
+python probe_input_guard.py 8081     # 15 条，读接口畸形入参
+python verify_geo_sync.py 8081       # 9 条，GEO 与数据库一致性
+python probe_write_guard.py 8081     # 24 条，写接口畸形入参
+python probe_rbac.py 8081            # 23 条，401/403 边界
+python accept_all.py 8081            # 23 条，一键自查
+python smoke_all.py 8081             # 全接口扫一遍，只看有没有 5xx
+```
+
+`redis-cli` 不在 PATH 上时加一个 `REDIS_CLI` 指向它的绝对路径。其余说明见 [`bench/README.md`](bench/README.md)。
+
 ---
 
 ## 几个关键文件
